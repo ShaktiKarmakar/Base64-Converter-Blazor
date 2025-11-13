@@ -50,5 +50,29 @@ app.MapRazorPages();
 app.MapBlazorHub();
 app.MapFallbackToPage("/_Host");
 
+// Launch browser automatically when running the published exe
+var isProduction = !app.Environment.IsDevelopment();
+if (isProduction)
+{
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(1500); // Wait for the server to be ready
+        try
+        {
+            var url = urls.Split(';').FirstOrDefault() ?? "http://localhost:5001";
+            var processInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = url,
+                UseShellExecute = true
+            };
+            System.Diagnostics.Process.Start(processInfo);
+        }
+        catch
+        {
+            // Ignore errors when launching browser (e.g., if no default browser is set)
+        }
+    });
+}
+
 app.Run();
 

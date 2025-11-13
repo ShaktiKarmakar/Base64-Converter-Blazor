@@ -6,6 +6,7 @@ namespace Base64AppBlazor.Services;
 public class Base64ConverterService
 {
     private const int MaxFileSize = 50 * 1024 * 1024; // 50MB
+    private static readonly System.Text.RegularExpressions.Regex Base64Regex = new(@"^[A-Za-z0-9+/]*={0,2}$", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     public async Task<(string base64, string filename, long size)> FileToBase64Async(Stream fileStream, string filename)
     {
@@ -14,8 +15,13 @@ public class Base64ConverterService
             throw new Exception($"File too large. Maximum size is {MaxFileSize / (1024 * 1024)}MB");
         }
 
-        using var memoryStream = new MemoryStream();
+        // Pre-size MemoryStream to avoid reallocations
+        var capacity = fileStream.Length > 0 ? (int)fileStream.Length : 8192;
+        using var memoryStream = new MemoryStream(capacity);
         await fileStream.CopyToAsync(memoryStream);
+        
+        // Use ToArray() - it's optimized in .NET and returns only the used portion
+        // The performance difference is minimal for our use case
         var fileBytes = memoryStream.ToArray();
         var base64String = Convert.ToBase64String(fileBytes);
 
@@ -24,10 +30,11 @@ public class Base64ConverterService
 
     public (byte[] fileData, string filename, string mimeType) Base64ToFile(string base64String, string? filename = null)
     {
-        // Remove data URL prefix if present
-        if (base64String.Contains(','))
+        // Optimize: Use IndexOf instead of Contains + Split
+        var commaIndex = base64String.IndexOf(',');
+        if (commaIndex >= 0)
         {
-            base64String = base64String.Split(',')[1];
+            base64String = base64String.Substring(commaIndex + 1);
         }
 
         try
@@ -53,6 +60,7 @@ public class Base64ConverterService
             return ("converted_file", "application/octet-stream");
         }
 
+        // Optimized: Check binary formats first (fast path)
         // PNG
         if (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47)
         {
@@ -79,6 +87,38 @@ public class Base64ConverterService
             return ("converted_file.zip", "application/zip");
         }
 
+        // Optimized: Check for JSON only on smaller files and check first bytes quickly
+        // JSON files start with { or [ (possibly after whitespace)
+        if (data.Length < 10_000_000) // Only check JSON for files under 10MB
+        {
+            // Quick check: skip whitespace and see if first non-whitespace is { or [
+            int startIndex = 0;
+            while (startIndex < data.Length && startIndex < 100 && 
+                   (data[startIndex] == 0x20 || data[startIndex] == 0x09 || 
+                    data[startIndex] == 0x0A || data[startIndex] == 0x0D))
+            {
+                startIndex++;
+            }
+
+            if (startIndex < data.Length && (data[startIndex] == 0x7B || data[startIndex] == 0x5B))
+            {
+                try
+                {
+                    // Only parse if it looks like JSON
+                    using var doc = JsonDocument.Parse(data);
+                    return ("converted_file.json", "application/json");
+                }
+                catch
+                {
+                    // If parsing fails, still check if it looks like JSON structure
+                    if (data[startIndex] == 0x7B || data[startIndex] == 0x5B)
+                    {
+                        return ("converted_file.json", "application/json");
+                    }
+                }
+            }
+        }
+
         return ("converted_file", "application/octet-stream");
     }
 
@@ -87,18 +127,48 @@ public class Base64ConverterService
         if (string.IsNullOrWhiteSpace(str) || str.Length < 4)
             return false;
 
-        // Remove data URL prefix if present
-        var cleanStr = str.Contains(',') ? str.Split(',')[1] : str;
+        // Optimize: Use IndexOf instead of Contains + Split
+        ReadOnlySpan<char> cleanStr = str;
+        var commaIndex = str.IndexOf(',');
+        if (commaIndex >= 0)
+        {
+            cleanStr = str.AsSpan(commaIndex + 1);
+        }
 
-        // Base64 regex pattern
-        var base64Regex = new System.Text.RegularExpressions.Regex(@"^[A-Za-z0-9+/]*={0,2}$");
-        if (!base64Regex.IsMatch(cleanStr))
+        // Early validation: Base64 strings must have length multiple of 4 (after padding)
+        // and only contain valid characters
+        if (cleanStr.Length == 0)
             return false;
 
-        // Try to decode it
+        // Quick check: Base64 strings are typically much longer and have specific character set
+        // Skip obvious non-base64 strings early
+        var hasInvalidChar = false;
+        var hasValidChar = false;
+        foreach (var c in cleanStr)
+        {
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || 
+                (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=')
+            {
+                hasValidChar = true;
+            }
+            else if (!char.IsWhiteSpace(c))
+            {
+                hasInvalidChar = true;
+                break;
+            }
+        }
+
+        if (hasInvalidChar || !hasValidChar)
+            return false;
+
+        // Use compiled regex for better performance
+        if (!Base64Regex.IsMatch(cleanStr.ToString()))
+            return false;
+
+        // Try to decode it (most expensive operation, do last)
         try
         {
-            var decoded = Convert.FromBase64String(cleanStr);
+            var decoded = Convert.FromBase64String(cleanStr.ToString());
             return decoded.Length > 0;
         }
         catch
@@ -129,7 +199,12 @@ public class Base64ConverterService
         switch (element.ValueKind)
         {
             case JsonValueKind.String:
-                var strValue = element.GetString() ?? "";
+                var strValue = element.GetString();
+                
+                // Early exit for obviously non-base64 strings
+                if (string.IsNullOrEmpty(strValue) || strValue.Length < 4)
+                    break;
+
                 if (IsValidBase64(strValue))
                 {
                     try
@@ -141,7 +216,7 @@ public class Base64ConverterService
                             FileData = fileData,
                             Filename = filename,
                             MimeType = mimeType,
-                            Path = path == "" ? "root" : path,
+                            Path = string.IsNullOrEmpty(path) ? "root" : path,
                             Size = fileData.Length
                         };
                         detectedFiles.Add(detectedFile);
@@ -157,7 +232,7 @@ public class Base64ConverterService
                 var index = 0;
                 foreach (var item in element.EnumerateArray())
                 {
-                    var newPath = path == "" ? $"[{index}]" : $"{path}[{index}]";
+                    var newPath = string.IsNullOrEmpty(path) ? $"[{index}]" : $"{path}[{index}]";
                     FindBase64InElement(item, newPath, detectedFiles);
                     index++;
                 }
@@ -166,7 +241,7 @@ public class Base64ConverterService
             case JsonValueKind.Object:
                 foreach (var prop in element.EnumerateObject())
                 {
-                    var newPath = path == "" ? prop.Name : $"{path}.{prop.Name}";
+                    var newPath = string.IsNullOrEmpty(path) ? prop.Name : $"{path}.{prop.Name}";
                     FindBase64InElement(prop.Value, newPath, detectedFiles);
                 }
                 break;
