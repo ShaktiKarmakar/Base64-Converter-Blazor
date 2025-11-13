@@ -1,0 +1,523 @@
+@page "/"
+@using Base64AppBlazor.Services
+@using Microsoft.AspNetCore.Components.Forms
+@inject Base64ConverterService ConverterService
+@inject IJSRuntime JSRuntime
+
+<PageTitle>Base64 Converter</PageTitle>
+
+<div class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 py-12 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-4xl mx-auto">
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-900 mb-2">Base64 Converter</h1>
+            <p class="text-gray-600">Convert files to base64 and base64 to files</p>
+        </div>
+
+        <div class="bg-white rounded-lg shadow-xl p-6 md:p-8 space-y-8">
+            <!-- File to Base64 Section -->
+            <div class="space-y-4">
+                <h2 class="text-2xl font-semibold text-gray-800">File to Base64</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Select File
+                        </label>
+                        <InputFile OnChange="HandleFileChange" class="block w-full text-sm text-gray-500" />
+                        @if (selectedFile != null)
+                        {
+                            <p class="mt-2 text-sm text-gray-600">
+                                Selected: <span class="font-medium">@selectedFile.Name</span> (@((selectedFile.Size / 1024.0).ToString("F2")) KB)
+                            </p>
+                        }
+                    </div>
+                    <button
+                        @onclick="HandleFileToBase64"
+                        disabled="@(loading || selectedFile == null)"
+                        class="w-full bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium">
+                        @if (loading)
+                        {
+                            <text>Converting...</text>
+                        }
+                        else
+                        {
+                            <text>Convert to Base64</text>
+                        }
+                    </button>
+                </div>
+            </div>
+
+            <div class="border-t border-gray-200"></div>
+
+            <!-- JSON to Files Section -->
+            <div class="space-y-4">
+                <h2 class="text-2xl font-semibold text-gray-800">JSON to Files (Base64 Detection)</h2>
+                <p class="text-sm text-gray-600">
+                    Upload a JSON file or paste JSON content. The app will automatically detect base64 strings and convert them to files.
+                </p>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Upload JSON File
+                        </label>
+                        <InputFile OnChange="@HandleJsonFileChange" accept=".json,application/json" class="block w-full text-sm text-gray-500" />
+                        @if (jsonFile != null)
+                        {
+                            <p class="mt-2 text-sm text-gray-600">
+                                Selected: <span class="font-medium">@jsonFile.Name</span> (@((jsonFile.Size / 1024.0).ToString("F2")) KB)
+                            </p>
+                        }
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Or Paste JSON Content
+                        </label>
+                        <textarea
+                            @bind="jsonInput"
+                            @bind:event="oninput"
+                            placeholder='Paste your JSON here...&#10;Example: {"image": "iVBORw0KGgoAAAANS...", "data": "SGVsbG8gV29ybGQ="}'
+                            rows="8"
+                            class="w-full px-4 py-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono text-sm">
+                        </textarea>
+                    </div>
+                    <button
+                        @onclick="HandleJsonToFiles"
+                        disabled="@(loading || string.IsNullOrWhiteSpace(jsonInput))"
+                        class="w-full bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium">
+                        @if (loading)
+                        {
+                            <text>Detecting and Converting...</text>
+                        }
+                        else
+                        {
+                            <text>Detect Base64 & Convert to Files</text>
+                        }
+                    </button>
+                    @if (detectedFiles.Any())
+                    {
+                        <div class="mt-4 p-4 bg-green-50 border border-green-200 rounded-md">
+                            <p class="text-sm text-green-800 mb-3 font-medium">
+                                Found @detectedFiles.Count file@(detectedFiles.Count > 1 ? "s" : "") ready for download!
+                            </p>
+                            <div class="space-y-2 mb-4">
+                                @foreach (var file in detectedFiles)
+                                {
+                                    <div class="flex items-center justify-between p-2 bg-white rounded border border-green-200">
+                                        <div class="flex items-center flex-1">
+                                            <input
+                                                type="checkbox"
+                                                checked="@selectedBase64Files.Contains(file.Base64Value)"
+                                                @onchange="@((ChangeEventArgs e) => ToggleBase64Selection(file.Base64Value, (bool)(e.Value ?? false)))"
+                                                class="mr-3 h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded" />
+                                            <div class="flex-1">
+                                                <p class="text-sm font-medium text-gray-800">@file.Filename</p>
+                                                <p class="text-xs text-gray-500">
+                                                    Path: @file.Path • Size: @((file.Size / 1024.0).ToString("F2")) KB • Type: @file.MimeType
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            @onclick="() => DownloadFile(file.FileData, file.Filename, file.MimeType)"
+                                            class="ml-3 bg-green-600 text-white py-1 px-3 rounded text-sm hover:bg-green-700 transition-colors font-medium">
+                                            Download
+                                        </button>
+                                    </div>
+                                }
+                            </div>
+                            <div class="flex gap-2 mb-4">
+                                <button
+                                    @onclick="SelectAllBase64"
+                                    class="px-3 py-1 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700 transition-colors font-medium">
+                                    Select All
+                                </button>
+                                <button
+                                    @onclick="DeselectAllBase64"
+                                    class="px-3 py-1 bg-gray-600 text-white rounded text-sm hover:bg-gray-700 transition-colors font-medium">
+                                    Deselect All
+                                </button>
+                                <button
+                                    @onclick="GenerateJsonWithSelectedBase64"
+                                    disabled="@(loading || selectedBase64Files.Count == 0)"
+                                    class="px-3 py-1 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium">
+                                    Generate JSON
+                                </button>
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(generatedJson))
+                            {
+                                <div class="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-md">
+                                    <p class="text-sm text-blue-800 mb-2 font-medium">Generated JSON Structure:</p>
+                                    <textarea
+                                        @bind="generatedJson"
+                                        rows="12"
+                                        readonly
+                                        class="w-full px-4 py-3 border border-blue-300 rounded-md bg-white font-mono text-sm">
+                                    </textarea>
+                                    <div class="flex gap-2 mt-2">
+                                        <button
+                                            @onclick="CopyGeneratedJson"
+                                            class="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 transition-colors font-medium">
+                                            Copy JSON
+                                        </button>
+                                        <button
+                                            @onclick="DownloadGeneratedJson"
+                                            class="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 transition-colors font-medium">
+                                            Download JSON
+                                        </button>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <div class="border-t border-gray-200"></div>
+
+            <!-- Base64 to File Section -->
+            <div class="space-y-4">
+                <h2 class="text-2xl font-semibold text-gray-800">Base64 to File</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Base64 String
+                        </label>
+                        <textarea
+                            @bind="base64String"
+                            @bind:event="oninput"
+                            placeholder="Paste your base64 string here..."
+                            rows="8"
+                            class="w-full px-4 py-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono text-sm">
+                        </textarea>
+                    </div>
+                    <div class="flex gap-3">
+                        <button
+                            @onclick="HandleBase64ToFile"
+                            disabled="@(loading || string.IsNullOrWhiteSpace(base64String))"
+                            class="flex-1 bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium">
+                            @if (loading)
+                            {
+                                <text>Converting...</text>
+                            }
+                            else
+                            {
+                                <text>Convert to File</text>
+                            }
+                        </button>
+                        @if (!string.IsNullOrWhiteSpace(base64String))
+                        {
+                            <button
+                                @onclick="CopyToClipboard"
+                                class="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 transition-colors font-medium">
+                                Copy
+                            </button>
+                        }
+                    </div>
+                    @if (downloadFileData != null)
+                    {
+                        <div class="mt-4 p-4 bg-green-50 border border-green-200 rounded-md">
+                            <p class="text-sm text-green-800 mb-2">File ready for download!</p>
+                            <button
+                                @onclick="() => DownloadFile(downloadFileData, downloadFilename, downloadMimeType)"
+                                class="inline-block bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 transition-colors font-medium">
+                                Download @downloadFilename
+                            </button>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <!-- Error Message -->
+            @if (!string.IsNullOrWhiteSpace(errorMessage))
+            {
+                <div class="mt-4 p-4 bg-red-50 border border-red-200 rounded-md">
+                    <p class="text-sm text-red-800">@errorMessage</p>
+                </div>
+            }
+
+            <!-- Clear Button -->
+            <div class="pt-4 border-t border-gray-200">
+                <button
+                    @onclick="ClearAll"
+                    class="w-full bg-gray-200 text-gray-700 py-2 px-4 rounded-md hover:bg-gray-300 transition-colors font-medium">
+                    Clear All
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private IBrowserFile? selectedFile;
+    private IBrowserFile? jsonFile;
+    private string base64String = "";
+    private string jsonInput = "";
+    private bool loading = false;
+    private string errorMessage = "";
+    private byte[]? downloadFileData;
+    private string downloadFilename = "";
+    private string downloadMimeType = "";
+    private List<DetectedFile> detectedFiles = new();
+    private HashSet<string> selectedBase64Files = new();
+    private string generatedJson = "";
+
+    private void HandleFileChange(InputFileChangeEventArgs e)
+    {
+        selectedFile = e.File;
+        errorMessage = "";
+        base64String = "";
+        downloadFileData = null;
+    }
+
+    private async Task HandleFileToBase64()
+    {
+        if (selectedFile == null)
+        {
+            errorMessage = "Please select a file first";
+            return;
+        }
+
+        loading = true;
+        errorMessage = "";
+
+        try
+        {
+            using var stream = selectedFile.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024);
+            var result = await ConverterService.FileToBase64Async(stream, selectedFile.Name);
+            base64String = result.base64;
+            downloadFileData = null;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private Task HandleBase64ToFile()
+    {
+        if (string.IsNullOrWhiteSpace(base64String))
+        {
+            errorMessage = "Please enter a base64 string";
+            return Task.CompletedTask;
+        }
+
+        loading = true;
+        errorMessage = "";
+        downloadFileData = null;
+
+        try
+        {
+            var result = ConverterService.Base64ToFile(base64String);
+            downloadFileData = result.fileData;
+            downloadFilename = result.filename;
+            downloadMimeType = result.mimeType;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private async Task CopyToClipboard()
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", base64String);
+            await JSRuntime.InvokeVoidAsync("alert", "Base64 copied to clipboard!");
+        }
+        catch
+        {
+            errorMessage = "Failed to copy to clipboard";
+        }
+    }
+
+    private async Task HandleJsonFileChange(InputFileChangeEventArgs e)
+    {
+        jsonFile = e.File;
+        errorMessage = "";
+        detectedFiles.Clear();
+
+        // Read the JSON file content
+        if (jsonFile != null)
+        {
+            try
+            {
+                using var stream = jsonFile.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024);
+                using var reader = new StreamReader(stream);
+                jsonInput = await reader.ReadToEndAsync();
+            }
+            catch (Exception ex)
+            {
+                errorMessage = $"Error reading file: {ex.Message}";
+            }
+        }
+    }
+
+    private async Task HandleJsonToFiles()
+    {
+        if (string.IsNullOrWhiteSpace(jsonInput))
+        {
+            errorMessage = "Please provide JSON input or upload a JSON file";
+            return;
+        }
+
+        loading = true;
+        errorMessage = "";
+        detectedFiles.Clear();
+        selectedBase64Files.Clear();
+        generatedJson = "";
+
+        try
+        {
+            string jsonContent = jsonInput;
+
+            // If a JSON file was uploaded, read it
+            if (jsonFile != null)
+            {
+                using var stream = jsonFile.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024);
+                using var reader = new StreamReader(stream);
+                jsonContent = await reader.ReadToEndAsync();
+            }
+
+            var files = ConverterService.FindBase64InJson(jsonContent);
+
+            if (files.Count == 0)
+            {
+                errorMessage = "No base64 content detected in the JSON";
+                base64String = "";
+            }
+            else
+            {
+                detectedFiles = files;
+                // Auto-select all base64 strings by default
+                selectedBase64Files = new HashSet<string>(files.Select(f => f.Base64Value));
+                // Populate the base64 to file field with detected base64 strings (one per line)
+                base64String = string.Join("\n\n", files.Select(f => f.Base64Value));
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void ToggleBase64Selection(string base64Value, bool isSelected)
+    {
+        if (isSelected)
+        {
+            selectedBase64Files.Add(base64Value);
+        }
+        else
+        {
+            selectedBase64Files.Remove(base64Value);
+        }
+    }
+
+    private void SelectAllBase64()
+    {
+        selectedBase64Files = new HashSet<string>(detectedFiles.Select(f => f.Base64Value));
+    }
+
+    private void DeselectAllBase64()
+    {
+        selectedBase64Files.Clear();
+    }
+
+    private void GenerateJsonWithSelectedBase64()
+    {
+        if (selectedBase64Files.Count == 0 || string.IsNullOrWhiteSpace(jsonInput))
+        {
+            errorMessage = "Please select at least one base64 string and ensure JSON input is available";
+            return;
+        }
+
+        try
+        {
+            // Use the jsonInput which already contains the JSON content
+            var selectedBase64List = selectedBase64Files.ToList();
+            generatedJson = ConverterService.GenerateJsonWithSelectedBase64(jsonInput, selectedBase64List);
+            errorMessage = "";
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error generating JSON: {ex.Message}";
+            generatedJson = "";
+        }
+    }
+
+    private async Task CopyGeneratedJson()
+    {
+        if (string.IsNullOrWhiteSpace(generatedJson))
+            return;
+
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", generatedJson);
+            await JSRuntime.InvokeVoidAsync("alert", "JSON copied to clipboard!");
+        }
+        catch
+        {
+            errorMessage = "Failed to copy JSON to clipboard";
+        }
+    }
+
+    private async Task DownloadGeneratedJson()
+    {
+        if (string.IsNullOrWhiteSpace(generatedJson))
+            return;
+
+        try
+        {
+            var jsonBytes = System.Text.Encoding.UTF8.GetBytes(generatedJson);
+            var base64 = Convert.ToBase64String(jsonBytes);
+            var dataUrl = $"data:application/json;base64,{base64}";
+            await JSRuntime.InvokeVoidAsync("downloadFile", dataUrl, "generated_json.json");
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to download JSON: {ex.Message}";
+        }
+    }
+
+    private async Task DownloadFile(byte[] fileData, string filename, string mimeType)
+    {
+        try
+        {
+            var base64 = Convert.ToBase64String(fileData);
+            var dataUrl = $"data:{mimeType};base64,{base64}";
+            await JSRuntime.InvokeVoidAsync("downloadFile", dataUrl, filename);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to download file: {ex.Message}";
+        }
+    }
+
+    private void ClearAll()
+    {
+        selectedFile = null;
+        jsonFile = null;
+        base64String = "";
+        jsonInput = "";
+        errorMessage = "";
+        downloadFileData = null;
+        downloadFilename = "";
+        downloadMimeType = "";
+        detectedFiles.Clear();
+        selectedBase64Files.Clear();
+        generatedJson = "";
+    }
+}
+
