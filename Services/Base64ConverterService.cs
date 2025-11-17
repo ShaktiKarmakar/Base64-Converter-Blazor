@@ -10,18 +10,29 @@ public class Base64ConverterService
 
     public async Task<(string base64, string filename, long size)> FileToBase64Async(Stream fileStream, string filename)
     {
-        if (fileStream.Length > MaxFileSize)
+        // Check stream length if available, otherwise we'll check after reading
+        if (fileStream.CanSeek && fileStream.Length > MaxFileSize)
         {
             throw new Exception($"File too large. Maximum size is {MaxFileSize / (1024 * 1024)}MB");
         }
 
-        // Pre-size MemoryStream to avoid reallocations
-        var capacity = fileStream.Length > 0 ? (int)fileStream.Length : 8192;
+        // Pre-size MemoryStream if we know the length, otherwise use default
+        int capacity = 8192;
+        if (fileStream.CanSeek && fileStream.Length > 0 && fileStream.Length <= MaxFileSize)
+        {
+            capacity = (int)fileStream.Length;
+        }
+
         using var memoryStream = new MemoryStream(capacity);
         await fileStream.CopyToAsync(memoryStream);
         
+        // Check size after reading (in case Length wasn't available)
+        if (memoryStream.Length > MaxFileSize)
+        {
+            throw new Exception($"File too large. Maximum size is {MaxFileSize / (1024 * 1024)}MB");
+        }
+
         // Use ToArray() - it's optimized in .NET and returns only the used portion
-        // The performance difference is minimal for our use case
         var fileBytes = memoryStream.ToArray();
         var base64String = Convert.ToBase64String(fileBytes);
 

@@ -280,26 +280,52 @@
         if (selectedFile == null)
         {
             errorMessage = "Please select a file first";
+            await InvokeAsync(StateHasChanged);
             return;
         }
 
         loading = true;
         errorMessage = "";
+        base64String = "";
+        await InvokeAsync(StateHasChanged);
 
         try
         {
             using var stream = selectedFile.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024);
+            
+            // Ensure stream is at the beginning
+            if (stream.CanSeek)
+            {
+                stream.Position = 0;
+            }
+            
             var result = await ConverterService.FileToBase64Async(stream, selectedFile.Name);
-            base64String = result.base64;
-            downloadFileData = null;
+            
+            if (!string.IsNullOrEmpty(result.base64))
+            {
+                base64String = result.base64;
+                downloadFileData = null;
+                errorMessage = "";
+            }
+            else
+            {
+                errorMessage = "Conversion resulted in empty base64 string. File may be empty or corrupted.";
+                base64String = "";
+            }
         }
         catch (Exception ex)
         {
-            errorMessage = ex.Message;
+            errorMessage = $"Error converting file: {ex.Message}";
+            if (ex.InnerException != null)
+            {
+                errorMessage += $" ({ex.InnerException.Message})";
+            }
+            base64String = "";
         }
         finally
         {
             loading = false;
+            await InvokeAsync(StateHasChanged);
         }
     }
 
@@ -308,28 +334,38 @@
         if (string.IsNullOrWhiteSpace(base64String))
         {
             errorMessage = "Please enter a base64 string";
+            await InvokeAsync(StateHasChanged);
             return;
         }
 
         loading = true;
         errorMessage = "";
         downloadFileData = null;
+        downloadFilename = "";
+        downloadMimeType = "";
+        await InvokeAsync(StateHasChanged);
 
-        // Use Task.Run to offload CPU-intensive work to thread pool
         try
         {
+            // Use Task.Run to offload CPU-intensive work to thread pool
             var result = await Task.Run(() => ConverterService.Base64ToFile(base64String));
+            
             downloadFileData = result.fileData;
             downloadFilename = result.filename;
             downloadMimeType = result.mimeType;
+            errorMessage = "";
         }
         catch (Exception ex)
         {
-            errorMessage = ex.Message;
+            errorMessage = $"Error converting base64: {ex.Message}";
+            downloadFileData = null;
+            downloadFilename = "";
+            downloadMimeType = "";
         }
         finally
         {
             loading = false;
+            await InvokeAsync(StateHasChanged);
         }
     }
 
