@@ -4,7 +4,17 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Startup cost matters here: the published exe launches a browser at itself, so time to
+         first response is time the user spends looking at a blank tab. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TieredPGO>true</TieredPGO>
   </PropertyGroup>
 
-</Project>
+  <!-- ReadyToRun would cut first-request JIT cost further, but it is deliberately NOT enabled
+       here: it needs a RuntimeIdentifier plus a runtime-pack restore, and this machine's NuGet
+       config includes a private feed that returns 401, so enabling it breaks "dotnet publish".
+       Once that feed is reachable (or removed), publish with a RuntimeIdentifier and set
+       PublishReadyToRun=true on the command line. -->
 
+</Project>

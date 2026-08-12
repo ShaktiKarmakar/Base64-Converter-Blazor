@@ -79,17 +79,20 @@
                         <label class="block text-sm font-medium text-gray-700 mb-2">
                             Or Paste JSON Content
                         </label>
+                        @* Bound on change (not oninput): with oninput every keystroke shipped the
+                           entire textarea to the server and the re-render shipped it back. *@
                         <textarea
                             @bind="jsonInput"
-                            @bind:event="oninput"
                             placeholder='Paste your JSON here...&#10;Example: {"image": "iVBORw0KGgoAAAANS...", "data": "SGVsbG8gV29ybGQ="}'
                             rows="8"
                             class="w-full px-4 py-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono text-sm">
                         </textarea>
                     </div>
+                    @* Not gated on jsonInput: that gate is what forced per-keystroke binding.
+                       The handler already validates and reports an empty input. *@
                     <button
                         @onclick="HandleJsonToFiles"
-                        disabled="@(loading || string.IsNullOrWhiteSpace(jsonInput))"
+                        disabled="@loading"
                         class="w-full bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium">
                         @if (loading)
                         {
@@ -100,21 +103,25 @@
                             <text>Detect Base64 & Convert to Files</text>
                         }
                     </button>
-                    @if (detectedFiles.Any())
+                    @if (detectedFiles.Count > 0)
                     {
                         <div class="mt-4 p-4 bg-green-50 border border-green-200 rounded-md">
                             <p class="text-sm text-green-800 mb-3 font-medium">
                                 Found @detectedFiles.Count file@(detectedFiles.Count > 1 ? "s" : "") ready for download!
                             </p>
                             <div class="space-y-2 mb-4">
-                                @foreach (var file in detectedFiles)
+                                @* Selection is keyed by index. Keying by Base64Value meant every
+                                   render hashed every multi-megabyte base64 string in the list. *@
+                                @for (var i = 0; i < detectedFiles.Count; i++)
                                 {
-                                    <div class="flex items-center justify-between p-2 bg-white rounded border border-green-200">
+                                    var index = i;
+                                    var file = detectedFiles[index];
+                                    <div @key="index" class="flex items-center justify-between p-2 bg-white rounded border border-green-200">
                                         <div class="flex items-center flex-1">
                                             <input
                                                 type="checkbox"
-                                                checked="@selectedBase64Files.Contains(file.Base64Value)"
-                                                @onchange="@((ChangeEventArgs e) => ToggleBase64Selection(file.Base64Value, (bool)(e.Value ?? false)))"
+                                                checked="@selectedBase64Files.Contains(index)"
+                                                @onchange="@((ChangeEventArgs e) => ToggleBase64Selection(index, (bool)(e.Value ?? false)))"
                                                 class="mr-3 h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded" />
                                             <div class="flex-1">
                                                 <p class="text-sm font-medium text-gray-800">@file.Filename</p>
@@ -153,8 +160,10 @@
                             {
                                 <div class="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-md">
                                     <p class="text-sm text-blue-800 mb-2 font-medium">Generated JSON Structure:</p>
+                                    @* One-way: it is readonly, so @bind only added a pointless
+                                       client-to-server sync of a large value. *@
                                     <textarea
-                                        @bind="generatedJson"
+                                        value="@generatedJson"
                                         rows="12"
                                         readonly
                                         class="w-full px-4 py-3 border border-blue-300 rounded-md bg-white font-mono text-sm">
@@ -188,9 +197,10 @@
                         <label class="block text-sm font-medium text-gray-700 mb-2">
                             Base64 String
                         </label>
+                        @* Bound on change (not oninput) -- see the JSON textarea above. This one
+                           routinely holds multi-megabyte values, so per-keystroke sync was worst here. *@
                         <textarea
                             @bind="base64String"
-                            @bind:event="oninput"
                             placeholder="Paste your base64 string here..."
                             rows="8"
                             class="w-full px-4 py-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono text-sm">
@@ -199,7 +209,7 @@
                     <div class="flex gap-3">
                         <button
                             @onclick="HandleBase64ToFile"
-                            disabled="@(loading || string.IsNullOrWhiteSpace(base64String))"
+                            disabled="@loading"
                             class="flex-1 bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium">
                             @if (loading)
                             {
@@ -210,14 +220,11 @@
                                 <text>Convert to File</text>
                             }
                         </button>
-                        @if (!string.IsNullOrWhiteSpace(base64String))
-                        {
-                            <button
-                                @onclick="CopyToClipboard"
-                                class="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 transition-colors font-medium">
-                                Copy
-                            </button>
-                        }
+                        <button
+                            @onclick="CopyToClipboard"
+                            class="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 transition-colors font-medium">
+                            Copy
+                        </button>
                     </div>
                     @if (downloadFileData != null)
                     {
@@ -264,8 +271,10 @@
     private string downloadFilename = "";
     private string downloadMimeType = "";
     private List<DetectedFile> detectedFiles = new();
-    private HashSet<string> selectedBase64Files = new();
+    private HashSet<int> selectedBase64Files = new();
     private string generatedJson = "";
+
+    private const long MaxUploadSize = 50L * 1024 * 1024;
 
     private void HandleFileChange(InputFileChangeEventArgs e)
     {
@@ -291,15 +300,12 @@
 
         try
         {
-            using var stream = selectedFile.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024);
-            
-            // Ensure stream is at the beginning
-            if (stream.CanSeek)
-            {
-                stream.Position = 0;
-            }
-            
-            var result = await ConverterService.FileToBase64Async(stream, selectedFile.Name);
+            using var stream = selectedFile.OpenReadStream(maxAllowedSize: MaxUploadSize);
+
+            // Pass the known size: Blazor's browser file stream reports CanSeek == false, so
+            // without it the service cannot pre-size its buffer and grows it by repeated
+            // doubling and copying (~13 reallocations for a 50MB file).
+            var result = await ConverterService.FileToBase64Async(stream, selectedFile.Name, selectedFile.Size);
             
             if (!string.IsNullOrEmpty(result.base64))
             {
@@ -371,6 +377,12 @@
 
     private async Task CopyToClipboard()
     {
+        if (string.IsNullOrWhiteSpace(base64String))
+        {
+            errorMessage = "Nothing to copy";
+            return;
+        }
+
         try
         {
             await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", base64String);
@@ -388,12 +400,14 @@
         errorMessage = "";
         detectedFiles.Clear();
 
-        // Read the JSON file content
+        // Read the JSON file content once, here. HandleJsonToFiles used to re-open and re-read
+        // the same file, transferring it over the wire a second time (and discarding any edits
+        // the user made in the textarea).
         if (jsonFile != null)
         {
             try
             {
-                using var stream = jsonFile.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024);
+                using var stream = jsonFile.OpenReadStream(maxAllowedSize: MaxUploadSize);
                 using var reader = new StreamReader(stream);
                 jsonInput = await reader.ReadToEndAsync();
             }
@@ -420,15 +434,9 @@
 
         try
         {
-            string jsonContent = jsonInput;
-
-            // If a JSON file was uploaded, read it
-            if (jsonFile != null)
-            {
-                using var stream = jsonFile.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024);
-                using var reader = new StreamReader(stream);
-                jsonContent = await reader.ReadToEndAsync();
-            }
+            // jsonInput already holds the uploaded file's content (read in HandleJsonFileChange),
+            // so there is nothing to fetch again here.
+            var jsonContent = jsonInput;
 
             // Offload CPU-intensive JSON parsing to thread pool
             var files = await Task.Run(() => ConverterService.FindBase64InJson(jsonContent));
@@ -441,10 +449,13 @@
             else
             {
                 detectedFiles = files;
-                // Auto-select all base64 strings by default
-                selectedBase64Files = new HashSet<string>(files.Select(f => f.Base64Value));
-                // Populate the base64 to file field with detected base64 strings (one per line)
-                base64String = string.Join("\n\n", files.Select(f => f.Base64Value));
+                // Auto-select everything by default.
+                selectedBase64Files = new HashSet<int>(Enumerable.Range(0, files.Count));
+
+                // Only mirror into the Base64-to-File box when there is a single match. Joining
+                // every payload with "\n\n" produced a string that could not be converted anyway,
+                // while pushing the combined size of every detected file over the wire.
+                base64String = files.Count == 1 ? files[0].Base64Value : "";
             }
         }
         catch (Exception ex)
@@ -457,21 +468,21 @@
         }
     }
 
-    private void ToggleBase64Selection(string base64Value, bool isSelected)
+    private void ToggleBase64Selection(int index, bool isSelected)
     {
         if (isSelected)
         {
-            selectedBase64Files.Add(base64Value);
+            selectedBase64Files.Add(index);
         }
         else
         {
-            selectedBase64Files.Remove(base64Value);
+            selectedBase64Files.Remove(index);
         }
     }
 
     private void SelectAllBase64()
     {
-        selectedBase64Files = new HashSet<string>(detectedFiles.Select(f => f.Base64Value));
+        selectedBase64Files = new HashSet<int>(Enumerable.Range(0, detectedFiles.Count));
     }
 
     private void DeselectAllBase64()
@@ -479,7 +490,7 @@
         selectedBase64Files.Clear();
     }
 
-    private void GenerateJsonWithSelectedBase64()
+    private async Task GenerateJsonWithSelectedBase64()
     {
         if (selectedBase64Files.Count == 0 || string.IsNullOrWhiteSpace(jsonInput))
         {
@@ -487,17 +498,32 @@
             return;
         }
 
+        loading = true;
+        await InvokeAsync(StateHasChanged);
+
         try
         {
-            // Use the jsonInput which already contains the JSON content
-            var selectedBase64List = selectedBase64Files.ToList();
-            generatedJson = ConverterService.GenerateJsonWithSelectedBase64(jsonInput, selectedBase64List);
+            // Preserve list order rather than HashSet enumeration order.
+            var selectedBase64List = detectedFiles
+                .Where((_, i) => selectedBase64Files.Contains(i))
+                .Select(f => f.Base64Value)
+                .ToList();
+
+            var json = jsonInput;
+
+            // Was running synchronously on the render thread, blocking the circuit for the
+            // duration of a full parse-and-rewrite of the payload.
+            generatedJson = await Task.Run(() => ConverterService.GenerateJsonWithSelectedBase64(json, selectedBase64List));
             errorMessage = "";
         }
         catch (Exception ex)
         {
             errorMessage = $"Error generating JSON: {ex.Message}";
             generatedJson = "";
+        }
+        finally
+        {
+            loading = false;
         }
     }
 
@@ -522,26 +548,27 @@
         if (string.IsNullOrWhiteSpace(generatedJson))
             return;
 
-        try
-        {
-            var jsonBytes = System.Text.Encoding.UTF8.GetBytes(generatedJson);
-            var base64 = Convert.ToBase64String(jsonBytes);
-            var dataUrl = $"data:application/json;base64,{base64}";
-            await JSRuntime.InvokeVoidAsync("downloadFile", dataUrl, "generated_json.json");
-        }
-        catch (Exception ex)
-        {
-            errorMessage = $"Failed to download JSON: {ex.Message}";
-        }
+        await StreamDownloadAsync(
+            System.Text.Encoding.UTF8.GetBytes(generatedJson),
+            "generated_json.json",
+            "application/json");
     }
 
-    private async Task DownloadFile(byte[] fileData, string filename, string mimeType)
+    private Task DownloadFile(byte[] fileData, string filename, string mimeType)
+        => StreamDownloadAsync(fileData, filename, mimeType);
+
+    /// <summary>
+    /// Sends the bytes as binary over the existing connection. The previous data-URL approach
+    /// base64-encoded the payload (+33%), interpolated it into a second string of that size, and
+    /// then had JS interop JSON-escape the result -- several full copies per download.
+    /// </summary>
+    private async Task StreamDownloadAsync(byte[] fileData, string filename, string mimeType)
     {
         try
         {
-            var base64 = Convert.ToBase64String(fileData);
-            var dataUrl = $"data:{mimeType};base64,{base64}";
-            await JSRuntime.InvokeVoidAsync("downloadFile", dataUrl, filename);
+            using var stream = new MemoryStream(fileData, writable: false);
+            using var streamRef = new DotNetStreamReference(stream, leaveOpen: true);
+            await JSRuntime.InvokeVoidAsync("downloadFileStream", streamRef, filename, mimeType);
         }
         catch (Exception ex)
         {

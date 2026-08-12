@@ -1,4 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+/* The Google Fonts @import that used to sit here forced a serialized waterfall: the browser had
+   to download app.css before it could even discover the font stylesheet, then the font files --
+   three sequential round trips before first paint, and a hard network dependency in an app that
+   runs locally. The system stack below renders as Segoe UI on Windows. To go back to Inter,
+   self-host the woff2 in wwwroot and declare it with @font-face + font-display: swap. */
 
 * {
     margin: 0;
@@ -7,7 +11,7 @@
 }
 
 html, body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
@@ -445,7 +449,6 @@ button:disabled {
     user-select: none;
     z-index: 0;
     letter-spacing: 0.1em;
-    font-family: 'Inter', sans-serif;
 }
 
 .header-initials {

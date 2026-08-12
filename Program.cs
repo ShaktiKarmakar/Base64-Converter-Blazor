@@ -1,5 +1,7 @@
+using System.IO.Compression;
 using Base64AppBlazor.Services;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Hosting;
 
@@ -32,7 +34,9 @@ builder.Services.AddServerSideBlazor(options =>
     options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromMinutes(3);
     options.DisconnectedCircuitMaxRetained = 100;
     options.JSInteropDefaultCallTimeout = TimeSpan.FromMinutes(1);
-    options.MaxBufferedUnacknowledgedRenderBatches = 20;
+    // Left at the framework default (10). Raising it buffers more in-flight render batches, and
+    // this app's batches can each carry a multi-megabyte textarea value -- more buffering here
+    // costs memory without improving throughput.
 });
 
 // Configure SignalR with longer timeouts and better connection handling
@@ -42,13 +46,35 @@ builder.Services.AddSignalR(options =>
     options.ClientTimeoutInterval = TimeSpan.FromMinutes(2);
     options.KeepAliveInterval = TimeSpan.FromSeconds(15);
     options.HandshakeTimeout = TimeSpan.FromSeconds(30);
-    options.MaximumReceiveMessageSize = 64 * 1024 * 1024; // 64MB for large file transfers
+    // A 50MB file encodes to ~67MB of base64, which the client can paste back into the textarea.
+    // The old 64MB ceiling was below that, so a max-size round trip killed the circuit instead
+    // of producing an error.
+    options.MaximumReceiveMessageSize = 96 * 1024 * 1024;
 });
 
-builder.Services.AddScoped<Base64ConverterService>();
+// Stateless and thread-safe -- no need for a fresh instance per circuit.
+builder.Services.AddSingleton<Base64ConverterService>();
 
-// Add response compression for better performance
-builder.Services.AddResponseCompression();
+// Response compression was previously a no-op: the default EnableForHttps is false and this app
+// redirects everything to HTTPS, so nothing was ever compressed.
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[]
+    {
+        "application/javascript",
+        "application/json",
+        "application/wasm",
+        "image/svg+xml",
+        "text/css",
+        "text/plain"
+    });
+});
+
+builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 
 // Configure form options to allow larger file uploads (50MB)
 builder.Services.Configure<FormOptions>(options =>
@@ -68,8 +94,22 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-app.UseStaticFiles();
+
+// Must run BEFORE UseStaticFiles: static files short-circuit the pipeline, so when compression
+// was registered after them it never saw a static response.
 app.UseResponseCompression();
+
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        // Fingerprinted framework assets and local css/js: let the browser reuse them across
+        // reloads instead of re-fetching on every launch.
+        ctx.Context.Response.Headers.CacheControl = app.Environment.IsDevelopment()
+            ? "no-cache"
+            : "public,max-age=604800";
+    }
+});
 
 app.UseRouting();
 
@@ -91,9 +131,10 @@ if (isProduction)
         {
             try
             {
-                // Wait for server to be fully ready
-                await Task.Delay(2500);
-                
+                // ApplicationStarted already fires once Kestrel is accepting connections; this is
+                // just a small margin. The old 2500ms was added straight onto perceived startup.
+                await Task.Delay(250);
+
                 // Try to get the HTTPS URL first, then HTTP
                 var urlToOpen = urls.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .FirstOrDefault(u => u.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) 
